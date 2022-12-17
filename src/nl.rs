@@ -10,13 +10,16 @@
 //! > domain sockets.
 //!
 use std::ffi::CString;
+use std::mem::size_of;
 use std::{
     fmt::Debug,
     os::raw::{c_int, c_uint},
 };
 
+use crate::nl::rt::can_bittiming;
 use neli::consts::rtnl::{Iff, IffFlags, Ifla, IflaInfo};
 use neli::rtnl::Rtattr;
+use neli::types::Buffer;
 use neli::{
     consts::{
         nl::{NlType, NlmF, NlmFFlags},
@@ -71,7 +74,12 @@ pub enum Mtu {
 
 // These are missing from libc and neli, adding them here as a stand-in for now.
 mod rt {
-    use libc::c_uint;
+    use libc::{c_uint, c_ushort};
+    use neli::err::{DeError, SerError};
+    use neli::{impl_trait, neli_enum, FromBytes, Size, ToBytes, TypeSize};
+    use std::fmt::Debug;
+    use std::io::Cursor;
+    use std::mem::size_of;
 
     #[allow(unused)]
     pub const EXT_FILTER_VF: c_uint = 1 << 0;
@@ -89,6 +97,69 @@ mod rt {
     pub const EXT_FILTER_CFM_STATUS: c_uint = 1 << 6;
     #[allow(unused)]
     pub const EXT_FILTER_MST: c_uint = 1 << 7;
+
+    ////
+    /// Also currently missing from libc, from linux/can/netlink.h:
+    ///
+    /// CAN bit-timing parameters
+    ///
+    /// For further information, please read chapter "8 BIT TIMING
+    /// REQUIREMENTS" of the "Bosch CAN Specification version 2.0"
+    /// at http://www.semiconductors.bosch.de/pdf/can2spec.pdf.
+    ///
+    #[repr(C)]
+    #[allow(non_camel_case_types)]
+    #[derive(Default, Clone)]
+    pub struct can_bittiming {
+        pub(crate) bitrate: u32,      /* Bit-rate in bits/second */
+        pub(crate) sample_point: u32, /* Sample point in one-tenth of a percent */
+        pub(crate) tq: u32,           /* Time quanta (TQ) in nanoseconds */
+        pub(crate) prop_seg: u32,     /* Propagation segment in TQs */
+        pub(crate) phase_seg1: u32,   /* Phase buffer segment 1 in TQs */
+        pub(crate) phase_seg2: u32,   /* Phase buffer segment 2 in TQs */
+        pub(crate) sjw: u32,          /* Synchronisation jump width in TQs */
+        pub(crate) brp: u32,          /* Bit-rate prescaler */
+    }
+
+    /// Currently missing from libc, from linux/can/netlink.h:
+    ///
+    /// CAN netlink interface
+    ///
+    /// Note: Cannot use repr(C) here, as this will not actually make the underlying type a u32
+    /// as it would be in C (which checks which data type is necessary, notices that i32 does not
+    /// work in this case, and goes for u32 next).
+    ///
+    #[repr(u32)]
+    #[derive(Debug, PartialEq, Clone, Copy)]
+    #[neli_enum()]
+    pub enum IflaCan {
+        Unspec = 0,
+        BitTiming,
+        BitTimingConst,
+        Clock,
+        State,
+        CtrlMode,
+        RestartMs,
+        Restart,
+        BerrCounter,
+        DataBitTiming,
+        DataBitTimingConst,
+        Termination,
+        TerminationConst,
+        BitRateConst,
+        DataBitRateConst,
+        BitRateMax,
+        Tdc,
+        CtrlModeExt,
+
+        /* add new constants above here */
+        __Max,
+        /// Note: This is a trick to force the underlying type to be a u32 used in the  C header.
+        /// Added for the sake of completeness. Will not compile if the c uint on the current
+        /// platform is not a u32.
+        Max = c_uint::MAX - 1,
+    }
+    impl_trait!(pub RtaType, libc::c_ushort, pub RtaTypeWrapper, IflaCan);
 }
 
 impl CanInterface {
@@ -347,6 +418,53 @@ impl CanInterface {
                     Ifla::Mtu,
                     &u32::to_ne_bytes(mtu as u32)[..],
                 )?);
+                buffer
+            },
+        );
+        Self::send_info_msg(Rtm::Newlink, info, &[])
+    }
+
+    /// PRIVILEGED: Attempt to set the bitrate (and  optionally sample point) of this interface.
+    pub fn set_bitrate(&self, bitrate: u32, sample_point: Option<u16>) -> NlResult<()> {
+        debug_assert!(
+            0 < bitrate && bitrate <= 1000000,
+            "Bitrate must be within 1..=1000000, received {}.",
+            bitrate
+        );
+        debug_assert!(
+            sample_point.filter(|point| *point >= 1000u16).is_none(),
+            "Sample point must be within 0..1000, received {}.",
+            sample_point.unwrap()
+        );
+
+        let info = Ifinfomsg::new(
+            RtAddrFamily::Unspecified,
+            Arphrd::Netrom,
+            self.if_index as c_int,
+            IffFlags::empty(),
+            IffFlags::empty(),
+            {
+                let mut buffer = RtBuffer::new();
+                let mut link_info = Rtattr::new(None, Ifla::Linkinfo, Buffer::new())?;
+                link_info.add_nested_attribute(&Rtattr::new(None, IflaInfo::Kind, "can")?)?;
+                let mut data = Rtattr::new(None, IflaInfo::Data, Buffer::new())?;
+                let timing = can_bittiming {
+                    bitrate,
+                    sample_point: sample_point.unwrap_or(0) as u32,
+                    tq: 0,
+                    prop_seg: 0,
+                    phase_seg1: 0,
+                    phase_seg2: 0,
+                    sjw: 0,
+                    brp: 0,
+                };
+                data.add_nested_attribute(&Rtattr::new(None, rt::IflaCan::BitTiming, unsafe {
+                    std::slice::from_raw_parts::<'_, u8>(
+                        &timing as *const can_bittiming as *const u8,
+                        size_of::<can_bittiming>(),
+                    )
+                })?)?;
+                buffer.push(link_info);
                 buffer
             },
         );
