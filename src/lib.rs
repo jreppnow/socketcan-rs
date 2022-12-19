@@ -70,6 +70,8 @@
     unused_qualifications
 )]
 
+extern crate core;
+
 pub mod errors;
 pub use errors::{CanError, CanErrorDecodingFailure, CanSocketOpenError, ConstructionError};
 

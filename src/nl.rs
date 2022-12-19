@@ -77,9 +77,10 @@ mod rt {
     use libc::{c_uint, c_ushort};
     use neli::err::{DeError, SerError};
     use neli::{impl_trait, neli_enum, FromBytes, Size, ToBytes, TypeSize};
-    use std::fmt::Debug;
+    use std::fmt::{Debug, Formatter};
+    use std::intrinsics::unreachable;
     use std::io::Cursor;
-    use std::mem::size_of;
+    use neli::consts::rtnl::RtaType;
 
     #[allow(unused)]
     pub const EXT_FILTER_VF: c_uint = 1 << 0;
@@ -129,37 +130,91 @@ mod rt {
     /// as it would be in C (which checks which data type is necessary, notices that i32 does not
     /// work in this case, and goes for u32 next).
     ///
-    #[repr(u32)]
     #[derive(Debug, PartialEq, Clone, Copy)]
-    #[neli_enum()]
+    #[neli_enum(serialized_type = "libc::c_ushort")]
     pub enum IflaCan {
         Unspec = 0,
-        BitTiming,
-        BitTimingConst,
-        Clock,
-        State,
-        CtrlMode,
-        RestartMs,
-        Restart,
-        BerrCounter,
-        DataBitTiming,
-        DataBitTimingConst,
-        Termination,
-        TerminationConst,
-        BitRateConst,
-        DataBitRateConst,
-        BitRateMax,
-        Tdc,
-        CtrlModeExt,
-
-        /* add new constants above here */
-        __Max,
-        /// Note: This is a trick to force the underlying type to be a u32 used in the  C header.
-        /// Added for the sake of completeness. Will not compile if the c uint on the current
-        /// platform is not a u32.
-        Max = c_uint::MAX - 1,
+        BitTiming = 1,
+        BitTimingConst = 2,
+        Clock = 3,
+        State = 4,
+        CtrlMode = 5,
+        RestartMs = 6,
+        Restart = 7,
+        BerrCounter = 8,
+        DataBitTiming = 9,
+        DataBitTimingConst = 10,
+        Termination = 11,
+        TerminationConst = 12,
+        BitRateConst = 13,
+        DataBitRateConst = 14,
+        BitRateMax = 15,
+        Tdc = 16,
+        CtrlModeExt = 17,
     }
-    impl_trait!(pub RtaType, libc::c_ushort, pub RtaTypeWrapper, IflaCan);
+
+    impl From<c_ushort> for IflaCan {
+        fn from(val: c_ushort) -> Self {
+            match val {
+                1 => Self::BitTiming,
+                2 => Self::BitTimingConst,
+                3 => Self::Clock,
+                4 => Self::State,
+                5 => Self::CtrlMode,
+                6 => Self::RestartMs,
+                7 => Self::Restart,
+                8 => Self::BerrCounter,
+                9 => Self::DataBitTiming,
+                10 => Self::DataBitTimingConst,
+                11 => Self::Termination,
+                12 => Self::TerminationConst,
+                13 => Self::BitRateConst,
+                14 => Self::DataBitRateConst,
+                15 => Self::BitRateMax,
+                16 => Self::Tdc,
+                17 => Self::CtrlModeExt,
+                _ => Self::Unspec,
+            }
+        }
+    }
+
+    impl Into<c_ushort> for IflaCan {
+        fn into(self) -> c_ushort {
+            self as c_ushort
+        }
+    }
+
+    impl Size for IflaCan {
+        fn unpadded_size(&self) -> usize {
+            std::mem::size_of::<can_bittiming>()
+        }
+    }
+
+    impl TypeSize for IflaCan {
+        fn type_size() -> usize {
+            todo!()
+        }
+    }
+
+    impl FromBytes<'a> for IflaCan {
+        fn from_bytes(buffer: &mut Cursor<&'a [u8]>) -> Result<Self, DeError> {
+            Ok((Self as From<c_ushort>)::)
+        }
+    }
+
+    impl Debug for IflaCan {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            todo!()
+        }
+    }
+
+    impl ToBytes for IflaCan {
+        fn to_bytes(&self, buffer: &mut Cursor<Vec<u8>>) -> Result<(), SerError> {
+            buffer.write_
+        }
+    }
+
+    impl RtaType for IflaCan {}
 }
 
 impl CanInterface {
@@ -280,11 +335,14 @@ impl CanInterface {
             Arphrd::Netrom,
             index.unwrap_or(0) as c_int,
             IffFlags::empty(),
-            IffFlags::empty(),
+            IffFlags::empty(), // The documentation says this should always be 0xFF..FF, but that does not work!
             {
                 let mut buffer = RtBuffer::new();
+                /// Adding an attribute.
                 buffer.push(Rtattr::new(None, Ifla::Ifname, name)?);
+                /// Adding an attribute with nested attributes inside.
                 let mut linkinfo = Rtattr::new(None, Ifla::Linkinfo, Vec::<u8>::new())?;
+                /// Adding the nested attribute itself.
                 linkinfo.add_nested_attribute(&Rtattr::new(None, IflaInfo::Kind, kind)?)?;
                 buffer.push(linkinfo);
                 buffer
