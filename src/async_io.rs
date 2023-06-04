@@ -12,6 +12,9 @@
 //! Bindings to async-io for CANbus 2.0 and FD sockets using SocketCAN on Linux.
 
 use crate::{frame::AsPtr, CanAnyFrame, CanFrame, Socket, SocketOptions};
+use std::pin::{pin, Pin};
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::{
     io,
     os::unix::io::{AsRawFd, RawFd},
@@ -19,12 +22,7 @@ use std::{
 
 #[cfg(any(feature = "async-io", feature = "async-std"))]
 use async_io::Async;
-
-#[cfg(all(
-    feature = "smol",
-    not(any(feature = "async-io", feature = "async-std"))
-))]
-use smol::Async;
+use futures::{pin_mut, Sink, Stream};
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -89,14 +87,37 @@ impl CanFdSocket {
     /// Writes a frame to the socket asynchronously.
     pub async fn write_frame<F>(&self, frame: &F) -> io::Result<()>
     where
-        F: Into<CanAnyFrame> + AsPtr,
+        F: Into<CanAnyFrame>,
     {
-        self.0.write_with(|fd| fd.write_frame(frame)).await
+        self.0
+            .write_with(|fd| fd.write_frame(match frame.into() {}))
+            .await
     }
 
     /// Reads a frame from the socket asynchronously.
     pub async fn read_frame(&self) -> io::Result<CanAnyFrame> {
         self.0.read_with(|fd| fd.read_frame()).await
+    }
+
+    pub fn split(
+        self,
+    ) -> (
+        impl Sink<CanAnyFrame>,
+        impl Stream<Item = io::Result<CanAnyFrame>>,
+    ) {
+        let me = Arc::new(self);
+
+        use futures::stream;
+        let stream = stream::unfold(Arc::clone(&me), |socket| async {
+            Some((socket.read_frame().await, socket))
+        });
+
+        use futures::sink;
+        let sink = sink::unfold(me, |socket, item| async {
+            socket.write_frame(&item).await.map(move |_| socket)
+        });
+
+        (sink, stream)
     }
 }
 

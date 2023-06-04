@@ -30,8 +30,8 @@ dump = []
 netlink_tests = ["netlink"]
 vcan_tests = ["netlink"]
 utils = ["clap", "anyhow"]
-tokio = ["dep:tokio", "mio", "futures"]
-async-std = ["dep:async-std", "dep:async-io"]
+tokio = ["dep:tokio", "mio", "dep:futures"]
+async-std = ["dep:async-std", "dep:async-io", "dep:futures"]
 
 [dependencies]
 embedded-can = "0.4"
